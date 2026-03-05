@@ -47,11 +47,40 @@ with open(site_cfg_path, "w") as f:
     json.dump(site, f, indent=1)
 PYEOF
 
-    # Relax MySQL strict mode — Frappe expects MariaDB which allows default values
-    # on JSON/BLOB columns. MySQL 8.0 blocks this with STRICT_TRANS_TABLES.
-    echo "Relaxing MySQL sql_mode for Frappe compatibility..."
+    # Monkey-patch MySQLdb.connect to relax sql_mode on every connection.
+    # Frappe expects MariaDB which allows default values on JSON/BLOB columns.
+    # MySQL 8.0 blocks this with STRICT_TRANS_TABLES. We can't SET GLOBAL on
+    # Cloud SQL, so we patch every connection at the Python level instead.
+    cat > /tmp/mysql_compat.py << 'PYEOF'
+import MySQLdb
+
+_original_connect = MySQLdb.connect
+
+def _patched_connect(*args, **kwargs):
+    conn = _original_connect(*args, **kwargs)
+    try:
+        cur = conn.cursor()
+        cur.execute("SET SESSION sql_mode='ONLY_FULL_GROUP_BY,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
+        cur.close()
+    except Exception:
+        pass
+    return conn
+
+MySQLdb.connect = _patched_connect
+PYEOF
+
+    # Install the patch so it loads automatically for all Python processes
+    SITEPKG=$(./env/bin/python3 -c "import site; print(site.getsitepackages()[0])")
+    cp /tmp/mysql_compat.py "$SITEPKG/mysql_compat.py"
+    echo "import mysql_compat" > "$SITEPKG/mysql_compat.pth"
+
+    echo "MySQL sql_mode compatibility patch installed"
+
+    # Drop any partially-created DB from a previous failed bench new-site,
+    # then try migrate or create fresh.
     ./env/bin/python3 - << 'PYEOF'
 import os, MySQLdb
+
 conn = MySQLdb.connect(
     host=os.environ["DB_HOST"],
     port=int(os.environ.get("DB_PORT", "3306")),
@@ -59,40 +88,31 @@ conn = MySQLdb.connect(
     passwd=os.environ.get("DB_PASSWORD", ""),
 )
 cur = conn.cursor()
-cur.execute("SET GLOBAL sql_mode='ONLY_FULL_GROUP_BY,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
-conn.commit()
+
+# Check if the site database exists and has the core tabDocType table
+db_name = os.environ.get("DB_NAME", "_1bd39a7536094989")
+cur.execute("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s", (db_name,))
+db_exists = cur.fetchone() is not None
+
+if db_exists:
+    cur.execute(f"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'tabDocType'", (db_name,))
+    has_core_table = cur.fetchone()[0] > 0
+    if not has_core_table:
+        print(f"Database {db_name} exists but is incomplete — dropping it")
+        cur.execute(f"DROP DATABASE `{db_name}`")
+        try:
+            cur.execute(f"DROP USER IF EXISTS `{db_name}`@'%%'")
+        except Exception:
+            pass
+        conn.commit()
+
 cur.close()
 conn.close()
-print("sql_mode relaxed successfully")
 PYEOF
 
     # Try migrate first (works if site DB already exists and is complete).
     if ! bench --site crm.localhost migrate 2>/dev/null; then
-        echo "Migration failed — dropping partial DB and creating fresh..."
-
-        # Drop any partially-created DB from a previous failed bench new-site
-        ./env/bin/python3 - << 'PYEOF'
-import os, MySQLdb
-conn = MySQLdb.connect(
-    host=os.environ["DB_HOST"],
-    port=int(os.environ.get("DB_PORT", "3306")),
-    user=os.environ.get("DB_USER", "root"),
-    passwd=os.environ.get("DB_PASSWORD", ""),
-)
-cur = conn.cursor()
-db_name = os.environ.get("DB_NAME", "_1bd39a7536094989")
-cur.execute(f"DROP DATABASE IF EXISTS `{db_name}`")
-# Also drop the user bench new-site may have created
-try:
-    cur.execute(f"DROP USER IF EXISTS `{db_name}`@'%%'")
-except Exception:
-    pass
-conn.commit()
-cur.close()
-conn.close()
-print(f"Dropped database {db_name}")
-PYEOF
-
+        echo "Migration failed — creating new site on external DB..."
         bench new-site crm.localhost \
             --force \
             --db-host "$DB_HOST" \
