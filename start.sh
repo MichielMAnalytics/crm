@@ -52,10 +52,34 @@ PYEOF
     # connection instead of using the root_login username as database name.
     # Frappe's get_root_connection() uses cur_db_name=frappe.flags.root_login, but
     # on managed PostgreSQL the user name doesn't match any database name.
+    # Patch Frappe's PostgreSQL setup:
+    # 1. Use 'postgres' database for root connection (user name != database name on managed PG)
+    # 2. Terminate existing connections before DROP DATABASE
     SETUP_DB="apps/frappe/frappe/database/postgres/setup_db.py"
     if [ -f "$SETUP_DB" ] && ! grep -q "cur_db_name=\"postgres\"" "$SETUP_DB"; then
-        sed -i 's/cur_db_name=frappe.flags.root_login/cur_db_name="postgres"/' "$SETUP_DB"
-        echo "Patched setup_db.py to use postgres database for root connection" >&2
+        ./env/bin/python3 - << 'PYEOF'
+path = "apps/frappe/frappe/database/postgres/setup_db.py"
+with open(path) as f:
+    content = f.read()
+
+# Fix 1: Use 'postgres' as root connection database
+content = content.replace(
+    'cur_db_name=frappe.flags.root_login',
+    'cur_db_name="postgres"'
+)
+
+# Fix 2: Terminate connections before DROP DATABASE
+content = content.replace(
+    'root_conn.sql(f\'DROP DATABASE IF EXISTS "{frappe.conf.db_name}"\')',
+    """root_conn.sql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='{frappe.conf.db_name}' AND pid <> pg_backend_pid()")
+\troot_conn.sql(f'DROP DATABASE IF EXISTS "{frappe.conf.db_name}"')"""
+)
+
+with open(path, "w") as f:
+    f.write(content)
+import sys
+print("Patched setup_db.py", file=sys.stderr)
+PYEOF
     fi
 
     # Wait for PostgreSQL to be ready
