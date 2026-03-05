@@ -23,6 +23,7 @@ db_host = os.environ["DB_HOST"]
 db_port = int(os.environ.get("DB_PORT", "5432"))
 db_user = os.environ.get("DB_USER", "postgres")
 db_password = os.environ.get("DB_PASSWORD", "")
+db_name = os.environ.get("DB_NAME", "app")
 
 # common_site_config.json — root credentials for bench new-site
 common_cfg_path = "sites/common_site_config.json"
@@ -42,7 +43,7 @@ with open(site_cfg_path) as f:
 site["db_host"] = db_host
 site["db_port"] = db_port
 site["db_type"] = "postgres"
-site.pop("db_name", None)
+site["db_name"] = db_name
 with open(site_cfg_path, "w") as f:
     json.dump(site, f, indent=1)
 PYEOF
@@ -91,7 +92,8 @@ except Exception as e:
             --db-port "${DB_PORT:-5432}" \
             --db-root-username "$DB_USER" \
             --db-root-password "$DB_PASSWORD" \
-            --admin-password "${ADMIN_PASSWORD:-admin}"
+            --admin-password "${ADMIN_PASSWORD:-admin}" \
+            --db-name "${DB_NAME:-app}"
 
         bench --site crm.localhost install-app crm
         bench use crm.localhost
