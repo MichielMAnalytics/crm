@@ -18,19 +18,35 @@ sed -i '/^watch/d' ./Procfile
 if [ -n "$DB_HOST" ]; then
     bench set-mariadb-host "$DB_HOST"
 
-    # Write DB connection details into site_config.json
+    # Write root_password to common_site_config.json (where bench new-site reads it)
+    # AND update site_config.json with correct DB host/type
     python3 - << 'PYEOF'
 import json, os
-cfg_path = "sites/crm.localhost/site_config.json"
-with open(cfg_path) as f:
-    cfg = json.load(f)
-cfg["db_host"] = os.environ["DB_HOST"]
-cfg["db_port"] = int(os.environ.get("DB_PORT", "3306"))
-cfg["db_type"] = "mariadb"
-if os.environ.get("DB_PASSWORD"):
-    cfg["root_password"] = os.environ["DB_PASSWORD"]
-with open(cfg_path, "w") as f:
-    json.dump(cfg, f, indent=1)
+
+db_host = os.environ["DB_HOST"]
+db_port = int(os.environ.get("DB_PORT", "3306"))
+db_password = os.environ.get("DB_PASSWORD", "")
+
+# common_site_config.json — bench reads root_password from here
+common_cfg_path = "sites/common_site_config.json"
+with open(common_cfg_path) as f:
+    common = json.load(f)
+common["db_host"] = db_host
+common["db_port"] = db_port
+common["root_password"] = db_password
+common["mariadb_user_host_login_scope"] = "%"
+with open(common_cfg_path, "w") as f:
+    json.dump(common, f, indent=1)
+
+# site_config.json — set db_type so Frappe uses MariaDB driver
+site_cfg_path = "sites/crm.localhost/site_config.json"
+with open(site_cfg_path) as f:
+    site = json.load(f)
+site["db_host"] = db_host
+site["db_port"] = db_port
+site["db_type"] = "mariadb"
+with open(site_cfg_path, "w") as f:
+    json.dump(site, f, indent=1)
 PYEOF
 
     # Try migrate first (works if site DB already exists).
@@ -43,7 +59,7 @@ PYEOF
             --db-port "${DB_PORT:-3306}" \
             --mariadb-root-password "$DB_PASSWORD" \
             --admin-password "${ADMIN_PASSWORD:-admin}" \
-            --no-mariadb-socket
+            --mariadb-user-host-login-scope="%"
 
         bench --site crm.localhost install-app crm
         bench use crm.localhost
