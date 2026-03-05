@@ -11,7 +11,7 @@ WORKDIR /home/frappe/frappe-bench
 # Install the CRM app from local source
 COPY --chown=frappe:frappe . /home/frappe/frappe-bench/apps/crm
 
-RUN bench get-app /home/frappe/frappe-bench/apps/crm
+RUN bench get-app file:///home/frappe/frappe-bench/apps/crm
 
 # Create site (uses SQLite for initial setup, will be reconfigured at runtime)
 RUN bench new-site crm.localhost \
