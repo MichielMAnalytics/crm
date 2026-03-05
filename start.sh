@@ -14,12 +14,10 @@ fi
 sed -i '/^redis/d' ./Procfile
 sed -i '/^watch/d' ./Procfile
 
-# --- MariaDB: configure and initialize ---
+# --- MySQL: configure and initialize ---
 if [ -n "$DB_HOST" ]; then
     bench set-mariadb-host "$DB_HOST"
 
-    # Write root_password to common_site_config.json (where bench new-site reads it)
-    # AND update site_config.json with correct DB host/type
     python3 - << 'PYEOF'
 import json, os
 
@@ -38,7 +36,7 @@ common["mariadb_user_host_login_scope"] = "%"
 with open(common_cfg_path, "w") as f:
     json.dump(common, f, indent=1)
 
-# site_config.json — set db_type so Frappe uses MariaDB driver
+# site_config.json
 site_cfg_path = "sites/crm.localhost/site_config.json"
 with open(site_cfg_path) as f:
     site = json.load(f)
@@ -47,6 +45,25 @@ site["db_port"] = db_port
 site["db_type"] = "mariadb"
 with open(site_cfg_path, "w") as f:
     json.dump(site, f, indent=1)
+PYEOF
+
+    # Relax MySQL strict mode — Frappe expects MariaDB which allows default values
+    # on JSON/BLOB columns. MySQL 8.0 blocks this with STRICT_TRANS_TABLES.
+    echo "Relaxing MySQL sql_mode for Frappe compatibility..."
+    python3 - << 'PYEOF'
+import os, MySQLdb
+conn = MySQLdb.connect(
+    host=os.environ["DB_HOST"],
+    port=int(os.environ.get("DB_PORT", "3306")),
+    user=os.environ.get("DB_USER", "root"),
+    passwd=os.environ.get("DB_PASSWORD", ""),
+)
+cur = conn.cursor()
+cur.execute("SET GLOBAL sql_mode='ONLY_FULL_GROUP_BY,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
+conn.commit()
+cur.close()
+conn.close()
+print("sql_mode relaxed successfully")
 PYEOF
 
     # Try migrate first (works if site DB already exists).
