@@ -36,28 +36,28 @@ with open(common_cfg_path, "w") as f:
     json.dump(common, f, indent=1)
 
 # site_config.json — set db_type to postgres
-# Do NOT set db_name here — bench new-site will create the DB and set it
 site_cfg_path = "sites/crm.localhost/site_config.json"
 with open(site_cfg_path) as f:
     site = json.load(f)
 site["db_host"] = db_host
 site["db_port"] = db_port
 site["db_type"] = "postgres"
-# Remove any stale db_name pointing to a non-existent database
 site.pop("db_name", None)
 with open(site_cfg_path, "w") as f:
     json.dump(site, f, indent=1)
-
-print(f"Configured: host={db_host} port={db_port} user={db_user}", file=sys.stderr)
-
-# Dump final config for debugging
-with open(site_cfg_path) as f:
-    print(f"site_config.json: {f.read()}", file=sys.stderr)
-with open(common_cfg_path) as f:
-    print(f"common_site_config.json: {f.read()}", file=sys.stderr)
 PYEOF
 
-    # Wait for PostgreSQL to be ready (connect to default 'postgres' database)
+    # Patch Frappe's PostgreSQL setup to connect to 'postgres' database for root
+    # connection instead of using the root_login username as database name.
+    # Frappe's get_root_connection() uses cur_db_name=frappe.flags.root_login, but
+    # on managed PostgreSQL the user name doesn't match any database name.
+    SETUP_DB="apps/frappe/frappe/database/postgres/setup_db.py"
+    if [ -f "$SETUP_DB" ] && ! grep -q "cur_db_name=\"postgres\"" "$SETUP_DB"; then
+        sed -i 's/cur_db_name=frappe.flags.root_login/cur_db_name="postgres"/' "$SETUP_DB"
+        echo "Patched setup_db.py to use postgres database for root connection" >&2
+    fi
+
+    # Wait for PostgreSQL to be ready
     for i in $(seq 1 30); do
         if ./env/bin/python3 -c "
 import psycopg2, os, sys
