@@ -47,37 +47,43 @@ with open(site_cfg_path, "w") as f:
     json.dump(site, f, indent=1)
 PYEOF
 
-    # Monkey-patch MySQLdb.connect to relax sql_mode on every connection.
-    # Frappe expects MariaDB which allows default values on JSON/BLOB columns.
-    # MySQL 8.0 blocks this with STRICT_TRANS_TABLES. We can't SET GLOBAL on
-    # Cloud SQL, so we patch every connection at the Python level instead.
-    cat > /tmp/mysql_compat.py << 'PYEOF'
-import MySQLdb
+    # Patch Frappe's MariaDB connector to relax sql_mode on every connection.
+    # Frappe v16 expects MariaDB which allows default values on JSON/BLOB columns.
+    # MySQL 8.0 blocks this with STRICT_TRANS_TABLES. We patch get_connection()
+    # to SET SESSION sql_mode after each new connection.
+    DBFILE="apps/frappe/frappe/database/mariadb/mysqlclient.py"
+    if [ -f "$DBFILE" ] && ! grep -q "sql_mode patch" "$DBFILE"; then
+        echo "Patching Frappe MariaDB connector for MySQL 8.0 compatibility..."
+        ./env/bin/python3 - << 'PYEOF'
+import re
 
-_original_connect = MySQLdb.connect
+path = "apps/frappe/frappe/database/mariadb/mysqlclient.py"
+with open(path) as f:
+    content = f.read()
 
-def _patched_connect(*args, **kwargs):
-    conn = _original_connect(*args, **kwargs)
-    try:
-        cur = conn.cursor()
-        cur.execute("SET SESSION sql_mode='ONLY_FULL_GROUP_BY,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
-        cur.close()
-    except Exception:
-        pass
-    return conn
+# Patch get_connection() to set sql_mode after creating the connection
+old = "conn.auto_reconnect = True\n\t\treturn conn"
+new = """conn.auto_reconnect = True
+\t\t# sql_mode patch: relax strict mode for MySQL 8.0 (Frappe expects MariaDB)
+\t\ttry:
+\t\t\t_cur = conn.cursor()
+\t\t\t_cur.execute("SET SESSION sql_mode='ONLY_FULL_GROUP_BY,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
+\t\t\t_cur.close()
+\t\texcept Exception:
+\t\t\tpass
+\t\treturn conn"""
 
-MySQLdb.connect = _patched_connect
+if old in content:
+    content = content.replace(old, new)
+    with open(path, "w") as f:
+        f.write(content)
+    print("Patched get_connection() successfully")
+else:
+    print("WARNING: Could not find patch target in mysqlclient.py")
 PYEOF
+    fi
 
-    # Install the patch so it loads automatically for all Python processes
-    SITEPKG=$(./env/bin/python3 -c "import site; print(site.getsitepackages()[0])")
-    cp /tmp/mysql_compat.py "$SITEPKG/mysql_compat.py"
-    echo "import mysql_compat" > "$SITEPKG/mysql_compat.pth"
-
-    echo "MySQL sql_mode compatibility patch installed"
-
-    # Drop any partially-created DB from a previous failed bench new-site,
-    # then try migrate or create fresh.
+    # Drop any incomplete database from a previous failed setup
     ./env/bin/python3 - << 'PYEOF'
 import os, MySQLdb
 
@@ -88,17 +94,15 @@ conn = MySQLdb.connect(
     passwd=os.environ.get("DB_PASSWORD", ""),
 )
 cur = conn.cursor()
+# Set relaxed sql_mode for this session
+cur.execute("SET SESSION sql_mode='ONLY_FULL_GROUP_BY,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
 
-# Check if the site database exists and has the core tabDocType table
 db_name = os.environ.get("DB_NAME", "_1bd39a7536094989")
 cur.execute("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s", (db_name,))
-db_exists = cur.fetchone() is not None
-
-if db_exists:
-    cur.execute(f"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'tabDocType'", (db_name,))
-    has_core_table = cur.fetchone()[0] > 0
-    if not has_core_table:
-        print(f"Database {db_name} exists but is incomplete — dropping it")
+if cur.fetchone():
+    cur.execute("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'tabDocType'", (db_name,))
+    if cur.fetchone()[0] == 0:
+        print(f"Database {db_name} is incomplete — dropping it")
         cur.execute(f"DROP DATABASE `{db_name}`")
         try:
             cur.execute(f"DROP USER IF EXISTS `{db_name}`@'%%'")
