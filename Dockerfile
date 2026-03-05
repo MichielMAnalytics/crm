@@ -8,10 +8,13 @@ RUN bench init --skip-redis-config-generation frappe-bench --version version-16
 
 WORKDIR /home/frappe/frappe-bench
 
-# Install the CRM app from local source
+# Install the CRM app (COPY strips .git, so install manually instead of bench get-app)
 COPY --chown=frappe:frappe . /home/frappe/frappe-bench/apps/crm
 
-RUN bench get-app file:///home/frappe/frappe-bench/apps/crm
+RUN cd /home/frappe/frappe-bench && \
+    ./env/bin/pip install -e apps/crm && \
+    echo "crm" >> sites/apps.txt && \
+    bench build --app crm
 
 # Create site (uses SQLite for initial setup, will be reconfigured at runtime)
 RUN bench new-site crm.localhost \
