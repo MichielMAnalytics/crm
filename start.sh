@@ -50,7 +50,7 @@ PYEOF
     # Relax MySQL strict mode — Frappe expects MariaDB which allows default values
     # on JSON/BLOB columns. MySQL 8.0 blocks this with STRICT_TRANS_TABLES.
     echo "Relaxing MySQL sql_mode for Frappe compatibility..."
-    python3 - << 'PYEOF'
+    ./env/bin/python3 - << 'PYEOF'
 import os, MySQLdb
 conn = MySQLdb.connect(
     host=os.environ["DB_HOST"],
@@ -66,10 +66,33 @@ conn.close()
 print("sql_mode relaxed successfully")
 PYEOF
 
-    # Try migrate first (works if site DB already exists).
-    # If it fails (first boot, no DB yet), create the site fresh.
+    # Try migrate first (works if site DB already exists and is complete).
     if ! bench --site crm.localhost migrate 2>/dev/null; then
-        echo "Migration failed — creating new site on external DB..."
+        echo "Migration failed — dropping partial DB and creating fresh..."
+
+        # Drop any partially-created DB from a previous failed bench new-site
+        ./env/bin/python3 - << 'PYEOF'
+import os, MySQLdb
+conn = MySQLdb.connect(
+    host=os.environ["DB_HOST"],
+    port=int(os.environ.get("DB_PORT", "3306")),
+    user=os.environ.get("DB_USER", "root"),
+    passwd=os.environ.get("DB_PASSWORD", ""),
+)
+cur = conn.cursor()
+db_name = os.environ.get("DB_NAME", "_1bd39a7536094989")
+cur.execute(f"DROP DATABASE IF EXISTS `{db_name}`")
+# Also drop the user bench new-site may have created
+try:
+    cur.execute(f"DROP USER IF EXISTS `{db_name}`@'%%'")
+except Exception:
+    pass
+conn.commit()
+cur.close()
+conn.close()
+print(f"Dropped database {db_name}")
+PYEOF
+
         bench new-site crm.localhost \
             --force \
             --db-host "$DB_HOST" \
