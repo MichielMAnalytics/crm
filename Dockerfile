@@ -3,11 +3,8 @@ FROM frappe/bench:latest
 USER frappe
 WORKDIR /home/frappe
 
-# Frappe v15 requires Python ≤3.12 (pypika 0.48.9 uses ast.Str removed in 3.12+)
-RUN pyenv install 3.11 && pyenv global 3.11
-
-# Initialize bench with Frappe v15
-RUN bench init --skip-redis-config-generation --python $(pyenv which python3.11) frappe-bench --version version-15
+# Initialize bench with Frappe v16 (matches CRM's frappe-dependencies: >=16.0.0-dev)
+RUN bench init --skip-redis-config-generation frappe-bench --version version-16
 
 WORKDIR /home/frappe/frappe-bench
 
