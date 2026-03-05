@@ -16,6 +16,13 @@ sed -i '/^watch/d' ./Procfile
 
 # --- PostgreSQL: configure and initialize ---
 if [ -n "$DB_HOST" ]; then
+    echo "Configuring PostgreSQL connection..."
+    echo "  DB_HOST=$DB_HOST"
+    echo "  DB_PORT=${DB_PORT:-5432}"
+    echo "  DB_USER=$DB_USER"
+    echo "  DB_NAME=${DB_NAME:-app}"
+    echo "  DB_PASSWORD length: ${#DB_PASSWORD}"
+
     python3 - << 'PYEOF'
 import json, os
 
@@ -47,6 +54,31 @@ site["db_name"] = db_name
 with open(site_cfg_path, "w") as f:
     json.dump(site, f, indent=1)
 PYEOF
+
+    # Wait for PostgreSQL to be ready
+    echo "Waiting for PostgreSQL to accept connections..."
+    for i in $(seq 1 30); do
+        if ./env/bin/python3 -c "
+import psycopg2, os
+try:
+    conn = psycopg2.connect(
+        host=os.environ['DB_HOST'],
+        port=int(os.environ.get('DB_PORT', '5432')),
+        user=os.environ.get('DB_USER', 'postgres'),
+        password=os.environ.get('DB_PASSWORD', ''),
+        dbname='postgres',
+        connect_timeout=5,
+    )
+    conn.close()
+    print('PostgreSQL is ready')
+except Exception as e:
+    print(f'Attempt {$i}: {e}')
+    exit(1)
+" 2>/dev/null; then
+            break
+        fi
+        sleep 2
+    done
 
     # Try migrate first (works if site DB already exists and is complete).
     if ! bench --site crm.localhost migrate 2>/dev/null; then
