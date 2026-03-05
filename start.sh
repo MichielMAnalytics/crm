@@ -49,6 +49,12 @@ with open(site_cfg_path, "w") as f:
     json.dump(site, f, indent=1)
 
 print(f"Configured: host={db_host} port={db_port} user={db_user}", file=sys.stderr)
+
+# Dump final config for debugging
+with open(site_cfg_path) as f:
+    print(f"site_config.json: {f.read()}", file=sys.stderr)
+with open(common_cfg_path) as f:
+    print(f"common_site_config.json: {f.read()}", file=sys.stderr)
 PYEOF
 
     # Wait for PostgreSQL to be ready (connect to default 'postgres' database)
