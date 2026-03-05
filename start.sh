@@ -16,23 +16,15 @@ sed -i '/^watch/d' ./Procfile
 
 # --- PostgreSQL: configure and initialize ---
 if [ -n "$DB_HOST" ]; then
-    echo "Configuring PostgreSQL connection..."
-    echo "  DB_HOST=$DB_HOST"
-    echo "  DB_PORT=${DB_PORT:-5432}"
-    echo "  DB_USER=$DB_USER"
-    echo "  DB_NAME=${DB_NAME:-app}"
-    echo "  DB_PASSWORD length: ${#DB_PASSWORD}"
-
     python3 - << 'PYEOF'
-import json, os
+import json, os, sys
 
 db_host = os.environ["DB_HOST"]
 db_port = int(os.environ.get("DB_PORT", "5432"))
 db_user = os.environ.get("DB_USER", "postgres")
 db_password = os.environ.get("DB_PASSWORD", "")
-db_name = os.environ.get("DB_NAME", "app")
 
-# common_site_config.json
+# common_site_config.json — root credentials for bench new-site
 common_cfg_path = "sites/common_site_config.json"
 with open(common_cfg_path) as f:
     common = json.load(f)
@@ -43,23 +35,26 @@ common["root_password"] = db_password
 with open(common_cfg_path, "w") as f:
     json.dump(common, f, indent=1)
 
-# site_config.json — set db_type to postgres and db_name
+# site_config.json — set db_type to postgres
+# Do NOT set db_name here — bench new-site will create the DB and set it
 site_cfg_path = "sites/crm.localhost/site_config.json"
 with open(site_cfg_path) as f:
     site = json.load(f)
 site["db_host"] = db_host
 site["db_port"] = db_port
 site["db_type"] = "postgres"
-site["db_name"] = db_name
+# Remove any stale db_name pointing to a non-existent database
+site.pop("db_name", None)
 with open(site_cfg_path, "w") as f:
     json.dump(site, f, indent=1)
+
+print(f"Configured: host={db_host} port={db_port} user={db_user}", file=sys.stderr)
 PYEOF
 
-    # Wait for PostgreSQL to be ready
-    echo "Waiting for PostgreSQL to accept connections..."
+    # Wait for PostgreSQL to be ready (connect to default 'postgres' database)
     for i in $(seq 1 30); do
         if ./env/bin/python3 -c "
-import psycopg2, os
+import psycopg2, os, sys
 try:
     conn = psycopg2.connect(
         host=os.environ['DB_HOST'],
@@ -70,11 +65,11 @@ try:
         connect_timeout=5,
     )
     conn.close()
-    print('PostgreSQL is ready')
+    print('PostgreSQL is ready', file=sys.stderr)
 except Exception as e:
-    print(f'Attempt {$i}: {e}')
+    print(f'Waiting for PostgreSQL ({e})', file=sys.stderr)
     exit(1)
-" 2>/dev/null; then
+" 2>&1; then
             break
         fi
         sleep 2
@@ -82,7 +77,7 @@ except Exception as e:
 
     # Try migrate first (works if site DB already exists and is complete).
     if ! bench --site crm.localhost migrate 2>/dev/null; then
-        echo "Migration failed — creating new site on external DB..."
+        echo "Migration failed — creating new site on external DB..." >&2
         bench new-site crm.localhost \
             --force \
             --db-type postgres \
@@ -90,8 +85,7 @@ except Exception as e:
             --db-port "${DB_PORT:-5432}" \
             --db-root-username "$DB_USER" \
             --db-root-password "$DB_PASSWORD" \
-            --admin-password "${ADMIN_PASSWORD:-admin}" \
-            --db-name "${DB_NAME:-app}"
+            --admin-password "${ADMIN_PASSWORD:-admin}"
 
         bench --site crm.localhost install-app crm
         bench use crm.localhost
