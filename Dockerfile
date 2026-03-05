@@ -13,6 +13,7 @@ COPY --chown=frappe:frappe . /home/frappe/frappe-bench/apps/crm
 
 RUN cd /home/frappe/frappe-bench && \
     ./env/bin/pip install -e apps/crm && \
+    ./env/bin/pip install psycopg2-binary && \
     printf '\ncrm\n' >> sites/apps.txt && \
     bench build --app crm
 
