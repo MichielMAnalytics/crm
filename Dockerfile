@@ -13,7 +13,7 @@ COPY --chown=frappe:frappe . /home/frappe/frappe-bench/apps/crm
 
 RUN cd /home/frappe/frappe-bench && \
     ./env/bin/pip install -e apps/crm && \
-    echo -e "\ncrm" >> sites/apps.txt && \
+    printf '\ncrm\n' >> sites/apps.txt && \
     bench build --app crm
 
 # Create site (uses SQLite for initial setup, will be reconfigured at runtime)
